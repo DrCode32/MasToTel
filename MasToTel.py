@@ -1,79 +1,64 @@
 import os
-from mastodon import Mastodon
-import requests
-from html2text import html2text
-import time
+import mastodon
+import telegram
+from telegram.ext import Updater, CommandHandler, MessageHandler
 
-# Mastodon API setup
-mastodon = Mastodon(
-    access_token=os.environ.get('MASTODON_ACCESS_TOKEN'),
-    api_base_url=os.environ.get('MASTODON_INSTANCE')
+
+mastodon_instance = 'https://mastodon.example.com'
+mastodon_access_token = ' your_access_token_here'
+
+
+telegram_token = 'your_telegram_token_here'
+telegram_channel_id = 'your_telegram_channel_id_here'
+
+
+m = mastodon.Mastodon(
+    access_token=mastodon_access_token,
+    api_base_url=mastodon_instance
 )
 
-# Telegram Bot API setup
-TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
-TELEGRAM_CHANNEL_ID = os.environ.get('TELEGRAM_CHANNEL_ID')
-TELEGRAM_API_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}"
 
-def send_telegram_message(text, parse_mode="HTML"):
-    url = f"{TELEGRAM_API_URL}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHANNEL_ID,
-        "text": text,
-        "parse_mode": parse_mode,
-        "disable_web_page_preview": True
-    }
-    response = requests.post(url, json=payload)
-    return response.json()
+bot = telegram.Bot(token=telegram_token)
 
-def send_telegram_media(file_url, caption, media_type):
-    url = f"{TELEGRAM_API_URL}/send{media_type.capitalize()}"
-    payload = {
-        "chat_id": TELEGRAM_CHANNEL_ID,
-        "caption": caption,
-        "parse_mode": "HTML"
-    }
-    files = {media_type: requests.get(file_url).content}
-    response = requests.post(url, data=payload, files=files)
-    return response.json()
 
-def process_status(status):
-    content = html2text(status['content'])
-    author = status['account']['acct']
-    post_url = status['url']
-    message = f"{content}\n<a href='{post_url}'>{author}</a>"
-
-    if status['media_attachments']:
-        for media in status['media_attachments']:
-            media_url = media['url']
-            media_type = media['type']
-            if media_type in ['image', 'video']:
-                send_telegram_media(media_url, message, media_type)
-            else:
-                send_telegram_message(f"{message}\n\nMedia URL: {media_url}")
+def send_message(text, media=None):
+    if media:
+        bot.send_photo(chat_id=telegram_channel_id, photo=media, caption=text)
     else:
-        send_telegram_message(message)
+        bot.send_message(chat_id=telegram_channel_id, text=text)
+
+
+statuses = m.timeline(timeline='home', limit=100)
+
+
+for status in statuses:
+
+    content = status['content']
+    sender = status['account']['username']
+    sender_url = f'https://{mastodon_instance}/@{sender}'
+
+    
+    media_url = None
+    for attachment in status['media_attachments']:
+        if attachment['type'] == 'image':
+            media_url = attachment['url']
+
+
+    text = f'{content}\n{sender} - {sender_url}'
+    send_message(text, media_url)
+
+
+def start(update, context):
+    context.bot.send_message(chat_id=update.effective_chat.id, text='Mastodon bot started!')
 
 def main():
-    last_id = None
-    while True:
-        try:
-            timeline = mastodon.account_statuses(mastodon.me(), since_id=last_id)
-            for status in reversed(timeline):
-                process_status(status)
-                last_id = status['id']
+    updater = Updater(telegram_token, use_context=True)
+    dp = updater.dispatcher
 
-            # Process replies
-            notifications = mastodon.notifications(since_id=last_id)
-            for notif in reversed(notifications):
-                if notif['type'] == 'mention':
-                    process_status(notif['status'])
-                    last_id = notif['id']
+    dp.add_handler(CommandHandler('start', start))
 
-        except Exception as e:
-            print(f"Error: {e}")
+    updater.start_polling()
+    updater.idle()
 
-        time.sleep(60)  # Check every minute
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
